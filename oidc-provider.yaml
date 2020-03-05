@@ -1,0 +1,140 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'An example CloudFormation template to configure an EKS cluster with an OpenID Connect provider to use IAM backed service accounts'
+
+Parameters:
+  EKSClusterName:
+    Type: String
+    Description: Name for EKS Cluster
+
+Resources:
+  ClusterOIDCURL:
+    Type: Custom::ClusterOIDCURL
+    Properties:
+      ServiceToken: !GetAtt ClusterOIDCURLFunction.Arn
+      ClusterName: !Ref EKSClusterName
+
+  # We need to use the API to get the OpenID Connect URL from the cluster, so a Lambda does that for us here
+  ClusterOIDCURLFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.7
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt ClusterOIDCLambdaExecutionRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import cfnresponse
+          eks = boto3.client("eks")
+          def lambda_handler(event, context):
+            responseData = {}
+            if event['RequestType'] == 'Delete':
+              responseData['Reason'] = "Success"
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, "")
+            else:
+              try:
+                cluster_name = event['ResourceProperties']['ClusterName']
+                response = eks.describe_cluster(name=cluster_name)
+                cluster_oidc_url = response['cluster']['identity']['oidc']['issuer']
+                # We need the url for the roles without the protocol when creating roles, so remove
+                # it here to make this easier to use in CF templates.
+                without_protocol = cluster_oidc_url.replace('https://', '')
+                responseData['Reason'] = "Success"
+                responseData['Url'] = without_protocol
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, without_protocol)
+              except Exception as e:
+                responseData['Reason'] = str(e)
+                cfnresponse.send(event, context, cfnresponse.FAILED, responseData, "")
+
+  ClusterOIDCProvider:
+    Type: Custom::ClusterOIDCProvider
+    Properties:
+      ServiceToken: !GetAtt ClusterOIDCProviderFunction.Arn
+      ClusterOIDCURL: !Ref ClusterOIDCURL
+
+  # This defines the lambda that will run the setup (and teardown) code for the OIDC provider
+  ClusterOIDCProviderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.7
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt ClusterOIDCLambdaExecutionRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import boto3
+          from botocore.exceptions import ClientError
+          import json
+          import cfnresponse
+          iam = boto3.client("iam")
+          def lambda_handler(event, context):
+            data = {}
+            try:
+              cluster_oidc_url = event['ResourceProperties']['ClusterOIDCURL']
+              if event['RequestType'] == 'Create':
+                with_protocol = "https://" + cluster_oidc_url
+                # This is the ca thumbprint of AWS's issuer
+                issuer_thumbprint = '9e99a48a9960b14926bb7f3b02e22da2b0ab7280'
+                resp = iam.create_open_id_connect_provider(Url=with_protocol,ClientIDList=['sts.amazonaws.com'],ThumbprintList=[issuer_thumbprint])
+                provider_arn = resp['OpenIDConnectProviderArn']
+                data["Reason"] = "Provider with ARN " + provider_arn + " created"
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, data, provider_arn)
+              elif event['RequestType'] == 'Delete':
+                provider_arn = event["PhysicalResourceId"]
+                if provider_arn is None:
+                  data["Reason"] = "Provider not present"
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, data, provider_arn)
+                else:
+                  resp = iam.delete_open_id_connect_provider(OpenIDConnectProviderArn=provider_arn)
+                  data["Reason"] = "Provider with ARN " + provider_arn + " deleted"
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, data, provider_arn)
+              else:
+                data["Reason"] = "Unknown operation: " + event['RequestType']
+                cfnresponse.send(event, context, cfnresponse.FAILED, data, "")
+            except Exception as e:
+              data["Reason"] = "Cannot " + event['RequestType'] + " Provider" + str(e)
+              cfnresponse.send(event, context, cfnresponse.FAILED, data, "")
+
+  # This the role that gives the stack sufficient permissions to create the OIDC provider. It is only
+  # used during lifecycle operations of this stack
+  ClusterOIDCLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+            - Effect: Allow
+              Action:
+              - eks:DescribeCluster
+              Resource: !Sub "arn:aws:eks:${AWS::Region}:${AWS::AccountId}:cluster/${EKSClusterName}"
+            - Effect: Allow
+              Action:
+              - iam:*OpenIDConnectProvider*
+              Resource: "*"
+            - Effect: Allow
+              Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              Resource: "*"
+
+Outputs:
+  ClusterOIDCURL:
+    Description: The OpenID Connect URL (without protocol)
+    Value: !Ref ClusterOIDCURL
