@@ -1,0 +1,42 @@
+---
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-namespace
+
+---
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: test-service-account
+  namespace: test-namespace
+  annotations:
+    # The values AWS_ACCOUNT_ID and CLUSTER_NAME should be replaced with real values before
+    # applying. The blog post has a `sed` command that will do this for you.
+    eks.amazonaws.com/role-arn: arn:aws:iam::AWS_ACCOUNT_ID:role/CLUSTER_NAME-pod-role
+
+---
+
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: test-deployment
+  namespace: test-namespace
+  labels:
+    app: test-deployment
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: test-deployment
+    spec:
+      serviceAccountName: test-service-account
+      containers:
+      - name: test-pod
+        image: bambooengineering/ubuntu-awscli:1.17.8
+        command: [ "/bin/bash", "-c", "--" ]
+        # Sleep forever to allow a user to ssh into the container and test IAM permissions
+        args: [ "while true; do sleep 30; done;" ]

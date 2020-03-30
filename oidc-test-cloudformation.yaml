@@ -1,0 +1,70 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'An example CloudFormation template to test IAM backed service accounts'
+
+Parameters:
+  EKSClusterName:
+    Type: String
+    Description: Name for EKS Cluster
+
+  ClusterOIDCURL:
+    Type: String
+    Description: The OpenID Connect URL without protocol (the "https://" prefix)
+
+Resources:
+  RuntimePodRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # This states that this business logic role is permitted to be assumed by pods through the
+      # OpenID Connect provider.
+      #
+      # We have to drop into a JSON string here as we want to apply a Condition to restrict the role
+      # to pods in the namespace "test-namespace" and with the service account name "test-service-account".
+      # There is no other way to template a StringEquals key in CloudFormation YAML.
+      #
+      # Use "*" in place of "test-service-account" for all service accounts in one namespace.
+      # It is possible to use "*" in place of "test-namespace:test-service-account" to permit all
+      # pods in a cluster to assume the role, but don't do this unless the permission is harmless
+      # or genuinely needed globally.
+      AssumeRolePolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Federated": "arn:aws:iam::${AWS::AccountId}:oidc-provider/${ClusterOIDCURL}"
+              },
+              "Action": "sts:AssumeRoleWithWebIdentity",
+              "Condition": {
+                "StringEquals": {
+                  "${ClusterOIDCURL}:sub": "system:serviceaccount:test-namespace:test-service-account"
+                }
+              }
+            }
+          ]
+        }
+      Policies:
+      - PolicyName: example-access-policy
+        PolicyDocument:
+          # These statements are the example business logic permissions required for this pod to run
+          Statement:
+          - Effect: Allow
+            Action:
+            - sns:GetTopicAttributes
+            Resource: !Ref ExampleSnsTopic
+      Path: "/"
+      RoleName: !Sub "${EKSClusterName}-pod-role"
+
+  # An example topic that we want our pod to be able to access.
+  ExampleSnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub "${EKSClusterName}-example-topic"
+      TopicName: !Sub "${EKSClusterName}-example-topic"
+
+Outputs:
+  RuntimePodRoleArn:
+    Description: The arn of the test role
+    Value: !GetAtt RuntimePodRole.Arn
+
