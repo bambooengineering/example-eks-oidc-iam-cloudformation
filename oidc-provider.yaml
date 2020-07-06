@@ -1,6 +1,10 @@
 ---
+# SPDX-FileCopyrightText: 2020 Bamboo Loans
+# SPDX-License-Identifier: MIT
 AWSTemplateFormatVersion: '2010-09-09'
 Description: 'An example CloudFormation template to configure an EKS cluster with an OpenID Connect provider to use IAM backed service accounts'
+Metadata:
+  Source: https://github.com/bambooengineering/example-eks-oidc-iam-cloudformation
 
 Parameters:
   EKSClusterName:
