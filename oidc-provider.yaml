@@ -138,3 +138,6 @@ Outputs:
   ClusterOIDCURL:
     Description: The OpenID Connect URL (without protocol)
     Value: !Ref ClusterOIDCURL
+  ClusterOIDCProvider:
+    Description: The ARN of the OIDCProvider
+    Value: !Ref ClusterOIDCProvider
